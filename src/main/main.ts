@@ -32,9 +32,19 @@ interface Item {
   notes: string;
 }
 
+interface TakenOutItem {
+  id: number;
+  name: string;
+  originalLocation: string;
+  quantity: number;
+  notes: string;
+}
+
 let items: Item[] = [];
+let takenOutItems: TakenOutItem[] = [];
 
 const DATA_FILE_PATH = path.join(app.getPath('userData'), 'items.json');
+const TAKEN_OUT_DATA_FILE_PATH = path.join(app.getPath('userData'), 'takenOutItems.json');
 
 function loadItems() {
   try {
@@ -46,7 +56,7 @@ function loadItems() {
       fs.writeFileSync(DATA_FILE_PATH, JSON.stringify(items, null, 2), 'utf-8');
     }
   } catch (error) {
-    console.error('读取本地数据失败', error);
+    console.error('读取本地数据失败 (items)', error);
     items = [];
   }
 }
@@ -55,7 +65,38 @@ function saveItems() {
   try {
     fs.writeFileSync(DATA_FILE_PATH, JSON.stringify(items, null, 2), 'utf-8');
   } catch (error) {
-    console.error('写入本地数据失败', error);
+    console.error('写入本地数据失败 (items)', error);
+  }
+}
+
+function loadTakenOutItems() {
+  try {
+    if (fs.existsSync(TAKEN_OUT_DATA_FILE_PATH)) {
+      const raw = fs.readFileSync(TAKEN_OUT_DATA_FILE_PATH, 'utf-8');
+      takenOutItems = JSON.parse(raw);
+    } else {
+      takenOutItems = [];
+      fs.writeFileSync(
+        TAKEN_OUT_DATA_FILE_PATH,
+        JSON.stringify(takenOutItems, null, 2),
+        'utf-8'
+      );
+    }
+  } catch (error) {
+    console.error('读取本地数据失败 (takenOutItems)', error);
+    takenOutItems = [];
+  }
+}
+
+function saveTakenOutItems() {
+  try {
+    fs.writeFileSync(
+      TAKEN_OUT_DATA_FILE_PATH,
+      JSON.stringify(takenOutItems, null, 2),
+      'utf-8'
+    );
+  } catch (error) {
+    console.error('写入本地数据失败 (takenOutItems)', error);
   }
 }
 
@@ -91,7 +132,7 @@ const createWindow = async () => {
     shell.openExternal(edata.url);
     return { action: 'deny' };
   });
-  mainWindow.webContents.openDevTools()
+  mainWindow.webContents.openDevTools();
   new AppUpdater();
 };
 
@@ -105,6 +146,7 @@ class AppUpdater {
 
 app.whenReady().then(() => {
   loadItems();
+  loadTakenOutItems();
   createWindow();
 });
 
@@ -116,7 +158,7 @@ app.on('activate', () => {
   if (mainWindow === null) createWindow();
 });
 
-// =============== 4. CRUD ===============
+// =============== 4. CRUD - storage items ===============
 ipcMain.handle('get-items', async () => {
   return items;
 });
@@ -143,7 +185,7 @@ ipcMain.handle('delete-item', async (_event, id: number) => {
   return id;
 });
 
-// =============== 5. 搜索 ===============
+// =============== 5. 搜索 - storage items ===============
 ipcMain.handle(
   'search-items',
   async (
@@ -172,9 +214,136 @@ ipcMain.handle(
   }
 );
 
-// =============== 6. Firebase 同步 ===============
+// =============== 6. 拿出 - 减少 storage item 并在 takenOutItems 中记录 ===============
+ipcMain.handle('take-out-item', async (_event, id: number) => {
+  const idx = items.findIndex((it) => it.id === id);
+  if (idx === -1) {
+    return { success: false, message: '未找到对应的 storage 物品' };
+  }
 
-// ✅ 修复：防止 undefined 字段写入 Firebase
+  // 如果数量 > 0 则减 1
+  if (items[idx].quantity > 0) {
+    items[idx].quantity -= 1;
+    saveItems();
+
+    const originItem = items[idx];
+    // 新增一条 takenOut 记录 (示例：每次拿出数量为 1)
+    const newTakenOut: TakenOutItem = {
+      id: Date.now(),
+      name: originItem.name,
+      originalLocation: originItem.location,
+      quantity: 1,
+      notes: originItem.notes,
+    };
+    takenOutItems.push(newTakenOut);
+    saveTakenOutItems();
+
+    return { success: true, takenOut: newTakenOut };
+  } else {
+    return { success: false, message: '数量已为0，无法再拿出' };
+  }
+});
+
+// =============== 7. CRUD - taken out items ===============
+ipcMain.handle('get-taken-out-items', async () => {
+  return takenOutItems;
+});
+
+ipcMain.handle('add-taken-out-item', async (_event, data: Omit<TakenOutItem, 'id'>) => {
+  const newItem: TakenOutItem = {
+    id: Date.now(),
+    ...data,
+  };
+  takenOutItems.push(newItem);
+  saveTakenOutItems();
+  return newItem;
+});
+
+ipcMain.handle('update-taken-out-item', async (_event, updated: TakenOutItem) => {
+  takenOutItems = takenOutItems.map((it) => (it.id === updated.id ? updated : it));
+  saveTakenOutItems();
+  return updated;
+});
+
+ipcMain.handle('delete-taken-out-item', async (_event, id: number) => {
+  takenOutItems = takenOutItems.filter((it) => it.id !== id);
+  saveTakenOutItems();
+  return id;
+});
+
+// =============== 8. 搜索 - taken out items ===============
+ipcMain.handle(
+  'search-taken-out-items',
+  async (
+    _event,
+    {
+      keyword,
+      includeNotes,
+      locationFilter,
+    }: { keyword: string; includeNotes: boolean; locationFilter: string }
+  ) => {
+    let result = takenOutItems;
+
+    if (locationFilter) {
+      result = result.filter((it) => it.originalLocation === locationFilter);
+    }
+
+    if (keyword) {
+      result = result.filter((it) => {
+        const inName = it.name.includes(keyword);
+        const inNotes = includeNotes && (it.notes ?? '').includes(keyword);
+        return inName || inNotes;
+      });
+    }
+
+    return result;
+  }
+);
+
+// =============== 9. 放回 - 在 takenOutItems 中减1，并加回到 storage ===============
+ipcMain.handle('return-taken-out-item', async (_event, id: number) => {
+  // 找到对应 takenOutItem
+  const idx = takenOutItems.findIndex((to) => to.id === id);
+  if (idx === -1) {
+    return { success: false, message: '未找到对应的 takenOut 物品' };
+  }
+
+  const outItem = takenOutItems[idx];
+  // 先把 takenOutItems[idx] 数量减 1
+  outItem.quantity -= 1;
+
+  // 在 storage 里找有没有 name + location 一样的
+  const storageIdx = items.findIndex(
+    (it) => it.name === outItem.name && it.location === outItem.originalLocation
+  );
+
+  if (storageIdx !== -1) {
+    // 找到则数量 +1
+    items[storageIdx].quantity += 1;
+  } else {
+    // 否则新建一个
+    const newStorageItem: Item = {
+      id: Date.now(),
+      name: outItem.name,
+      location: outItem.originalLocation,
+      quantity: 1,
+      notes: outItem.notes,
+    };
+    items.push(newStorageItem);
+  }
+
+  // 如果 outItem 数量减到 0，删除之
+  if (outItem.quantity <= 0) {
+    takenOutItems.splice(idx, 1);
+  }
+
+  saveItems();
+  saveTakenOutItems();
+
+  return { success: true };
+});
+
+// =============== 10. Firebase 同步 ===============
 function sanitizeItem(it: Partial<Item>): Item {
   return {
     id: it.id ?? Date.now(),
@@ -184,19 +353,39 @@ function sanitizeItem(it: Partial<Item>): Item {
     notes: it.notes ?? '',
   };
 }
+function sanitizeTakenOutItem(it: Partial<TakenOutItem>): TakenOutItem {
+  return {
+    id: it.id ?? Date.now(),
+    name: it.name ?? '',
+    originalLocation: it.originalLocation ?? '',
+    quantity: typeof it.quantity === 'number' ? it.quantity : 1,
+    notes: it.notes ?? '',
+  };
+}
 
 ipcMain.handle('sync-with-firebase', async () => {
   try {
-    const colRef = collection(db, 'items');
-    const snapshot = await getDocs(colRef);
+    // 1) 读取 items
+    const colRefItems = collection(db, 'items');
+    const snapshotItems = await getDocs(colRefItems);
     const remoteItems: Item[] = [];
-
-    snapshot.forEach((docSnap) => {
-      const data = docSnap.data();
-      remoteItems.push(sanitizeItem(data));
+    snapshotItems.forEach((docSnap) => {
+      remoteItems.push(sanitizeItem(docSnap.data()));
     });
 
-    return { success: true, remoteItems };
+    // 2) 读取 takenOutItems
+    const colRefTakenOut = collection(db, 'takenOutItems');
+    const snapshotTakenOut = await getDocs(colRefTakenOut);
+    const remoteTakenOutItems: TakenOutItem[] = [];
+    snapshotTakenOut.forEach((docSnap) => {
+      remoteTakenOutItems.push(sanitizeTakenOutItem(docSnap.data()));
+    });
+
+    return {
+      success: true,
+      remoteItems,
+      remoteTakenOutItems,
+    };
   } catch (err: any) {
     console.error('连接 Firebase 失败: ', err);
     return { success: false, message: err?.message || '连接 Firebase 失败' };
@@ -205,11 +394,20 @@ ipcMain.handle('sync-with-firebase', async () => {
 
 ipcMain.handle('overwrite-firebase-by-local', async () => {
   try {
+    // 1) 写入 items
     for (const it of items) {
       const cleanItem = sanitizeItem(it);
       const docRef = doc(db, 'items', String(cleanItem.id));
       await setDoc(docRef, cleanItem);
     }
+
+    // 2) 写入 takenOutItems
+    for (const outIt of takenOutItems) {
+      const cleanOut = sanitizeTakenOutItem(outIt);
+      const docRef = doc(db, 'takenOutItems', String(cleanOut.id));
+      await setDoc(docRef, cleanOut);
+    }
+
     return { success: true };
   } catch (err: any) {
     console.error('本地覆盖 Firebase 失败: ', err);
@@ -217,13 +415,26 @@ ipcMain.handle('overwrite-firebase-by-local', async () => {
   }
 });
 
-ipcMain.handle('overwrite-local-by-firebase', async (_event, remoteItems: Item[]) => {
-  try {
-    items = remoteItems.map(sanitizeItem);
-    saveItems();
-    return { success: true };
-  } catch (err: any) {
-    console.error('远程覆盖本地失败: ', err);
-    return { success: false, message: err?.message || '远程覆盖失败' };
+ipcMain.handle(
+  'overwrite-local-by-firebase',
+  async (
+    _event,
+    {
+      remoteItems,
+      remoteTakenOutItems,
+    }: { remoteItems: Item[]; remoteTakenOutItems: TakenOutItem[] }
+  ) => {
+    try {
+      items = remoteItems.map(sanitizeItem);
+      saveItems();
+
+      takenOutItems = remoteTakenOutItems.map(sanitizeTakenOutItem);
+      saveTakenOutItems();
+
+      return { success: true };
+    } catch (err: any) {
+      console.error('远程覆盖本地失败: ', err);
+      return { success: false, message: err?.message || '远程覆盖失败' };
+    }
   }
-});
+);

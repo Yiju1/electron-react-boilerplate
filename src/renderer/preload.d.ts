@@ -6,10 +6,19 @@ export interface Item {
   notes: string;
 }
 
+export interface TakenOutItem {
+  id: number;
+  name: string;
+  originalLocation: string;
+  quantity: number;
+  notes: string;
+}
+
 declare global {
   interface Window {
     electron: {
       ipc: {
+        // ========== storage items ==========
         getItems: () => Promise<Item[]>;
         addItem: (data: Omit<Item, 'id'>) => Promise<Item>;
         updateItem: (data: Item) => Promise<Item>;
@@ -20,17 +29,39 @@ declare global {
           locationFilter: string;
         }) => Promise<Item[]>;
 
-        // 新增: 同步相关
+        // ========== take out ==========
+        takeOutItem: (id: number) => Promise<{
+          success: boolean;
+          message?: string;
+          takenOut?: TakenOutItem;
+        }>;
+
+        // ========== taken-out items ==========
+        getTakenOutItems: () => Promise<TakenOutItem[]>;
+        addTakenOutItem: (data: Omit<TakenOutItem, 'id'>) => Promise<TakenOutItem>;
+        updateTakenOutItem: (data: TakenOutItem) => Promise<TakenOutItem>;
+        deleteTakenOutItem: (id: number) => Promise<number>;
+        searchTakenOutItems: (args: {
+          keyword: string;
+          includeNotes: boolean;
+          locationFilter: string;
+        }) => Promise<TakenOutItem[]>;
+
+        // ========== return ==========
+        returnTakenOutItem: (id: number) => Promise<{ success: boolean; message?: string }>;
+
+        // ========== 同步 ==========
         syncWithFirebase: () => Promise<{
           success: boolean;
           remoteItems?: Item[];
+          remoteTakenOutItems?: TakenOutItem[];
           message?: string;
         }>;
         overwriteFirebaseByLocal: () => Promise<{ success: boolean; message?: string }>;
-        overwriteLocalByFirebase: (remoteItems: Item[]) => Promise<{
-          success: boolean;
-          message?: string;
-        }>;
+        overwriteLocalByFirebase: (payload: {
+          remoteItems: Item[];
+          remoteTakenOutItems: TakenOutItem[];
+        }) => Promise<{ success: boolean; message?: string }>;
       };
     };
   }

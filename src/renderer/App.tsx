@@ -11,33 +11,50 @@ interface Item {
   notes: string;
 }
 
+interface TakenOutItem {
+  id: number;
+  name: string;
+  originalLocation: string;
+  quantity: number;
+  notes: string;
+}
+
 export default function App() {
-  // ====== State: 全量 & 当前显示 ======
+  // ====== 当前展示哪一个界面 ("storage" or "takenOut") ======
+  const [currentTab, setCurrentTab] = useState<'storage' | 'takenOut'>('storage');
+
+  // ====== Storage Items ======
   const [allItems, setAllItems] = useState<Item[]>([]);
-  const [items, setItems] = useState<Item[]>([]);
+  const [items, setItems] = useState<Item[]>([]); // 用于搜索过滤后显示
+
+  // ====== TakenOut Items ======
+  const [allTakenOutItems, setAllTakenOutItems] = useState<TakenOutItem[]>([]);
+  const [takenOutItems, setTakenOutItems] = useState<TakenOutItem[]>([]); // 用于搜索过滤后显示
 
   // ====== 搜索相关 ======
   const [searchKeyword, setSearchKeyword] = useState('');
-  const [showAdvancedSearch, setShowAdvancedSearch] = useState(false); // 是否显示高级搜索选项
+  const [showAdvancedSearch, setShowAdvancedSearch] = useState(false);
   const [searchIncludeNotes, setSearchIncludeNotes] = useState(false);
   const [searchLocationFilter, setSearchLocationFilter] = useState('');
 
-  // ====== 添加物品相关 ======
+  // ====== 添加/编辑物品(对于当前Tab)相关 ======
   const [addMode, setAddMode] = useState(false);
+  const [editingItem, setEditingItem] = useState<Item | null>(null);
+  const [editingOutItem, setEditingOutItem] = useState<TakenOutItem | null>(null);
+
+  // 新增输入框
   const [newName, setNewName] = useState('');
   const [newLocation, setNewLocation] = useState('');
   const [newQuantity, setNewQuantity] = useState(1);
   const [newNotes, setNewNotes] = useState('');
 
-  // ====== 编辑物品相关 ======
-  const [editingItem, setEditingItem] = useState<Item | null>(null);
-
   // ====== 同步 & 冲突相关 ======
   const [showConflictModal, setShowConflictModal] = useState(false);
   const [remoteItemsCache, setRemoteItemsCache] = useState<Item[]>([]);
+  const [remoteTakenOutCache, setRemoteTakenOutCache] = useState<TakenOutItem[]>([]);
   const [showSyncPanel, setShowSyncPanel] = useState(false);
 
-  // ====== 引用，用于点击浮层外区域时收起浮层 ======
+  // ====== ref: 点击浮层外区域时收起浮层 ======
   const advancedSearchRef = useRef<HTMLDivElement | null>(null);
   const syncPanelRef = useRef<HTMLDivElement | null>(null);
 
@@ -46,6 +63,10 @@ export default function App() {
     window.electron.ipc.getItems().then((data) => {
       setAllItems(data);
       setItems(data);
+    });
+    window.electron.ipc.getTakenOutItems().then((data) => {
+      setAllTakenOutItems(data);
+      setTakenOutItems(data);
     });
   }, []);
 
@@ -66,7 +87,7 @@ export default function App() {
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
-  // ====== 位置选项 (从 allItems 计算) ======
+  // ====== Storage 位置选项 (供自动补全，包括拿出界面也复用这些location) ======
   const locationOptions = useMemo(() => {
     const setLoc = new Set(allItems.map((it) => it.location));
     return Array.from(setLoc);
@@ -74,12 +95,21 @@ export default function App() {
 
   // ========== 搜索逻辑 ==========
   const handleSearch = async () => {
-    const result = await window.electron.ipc.searchItems({
-      keyword: searchKeyword,
-      includeNotes: searchIncludeNotes,
-      locationFilter: searchLocationFilter,
-    });
-    setItems(result);
+    if (currentTab === 'storage') {
+      const result = await window.electron.ipc.searchItems({
+        keyword: searchKeyword,
+        includeNotes: searchIncludeNotes,
+        locationFilter: searchLocationFilter,
+      });
+      setItems(result);
+    } else {
+      const result = await window.electron.ipc.searchTakenOutItems({
+        keyword: searchKeyword,
+        includeNotes: searchIncludeNotes,
+        locationFilter: searchLocationFilter,
+      });
+      setTakenOutItems(result);
+    }
   };
 
   // ========== 添加物品逻辑 ==========
@@ -88,14 +118,28 @@ export default function App() {
       alert('请填写名称和位置');
       return;
     }
-    const newItem = await window.electron.ipc.addItem({
-      name: newName,
-      location: newLocation,
-      quantity: newQuantity,
-      notes: newNotes,
-    });
-    setAllItems((prev) => [...prev, newItem]);
-    setItems((prev) => [...prev, newItem]);
+
+    if (currentTab === 'storage') {
+      // 添加到 storage
+      const newItem = await window.electron.ipc.addItem({
+        name: newName,
+        location: newLocation,
+        quantity: newQuantity,
+        notes: newNotes,
+      });
+      setAllItems((prev) => [...prev, newItem]);
+      setItems((prev) => [...prev, newItem]);
+    } else {
+      // 添加到 takenOut
+      const newTakenOut = await window.electron.ipc.addTakenOutItem({
+        name: newName,
+        originalLocation: newLocation,
+        quantity: newQuantity,
+        notes: newNotes,
+      });
+      setAllTakenOutItems((prev) => [...prev, newTakenOut]);
+      setTakenOutItems((prev) => [...prev, newTakenOut]);
+    }
 
     // 重置
     setNewName('');
@@ -113,9 +157,10 @@ export default function App() {
     setAddMode(false);
   };
 
-  // ========== 编辑逻辑 ==========
+  // ========== Storage: 编辑逻辑 ==========
   const startEdit = (item: Item) => {
     setEditingItem(item);
+    setEditingOutItem(null);
   };
 
   const handleSaveEdit = async () => {
@@ -126,51 +171,129 @@ export default function App() {
     setEditingItem(null);
   };
 
+  // ========== TakenOut: 编辑逻辑 ==========
+  const startEditTakenOut = (outItem: TakenOutItem) => {
+    setEditingItem(null);
+    setEditingOutItem(outItem);
+  };
+
+  const handleSaveEditTakenOut = async () => {
+    if (!editingOutItem) return;
+    const updated = await window.electron.ipc.updateTakenOutItem(editingOutItem);
+    setAllTakenOutItems((prev) => prev.map((it) => (it.id === updated.id ? updated : it)));
+    setTakenOutItems((prev) => prev.map((it) => (it.id === updated.id ? updated : it)));
+    setEditingOutItem(null);
+  };
+
   // ========== 删除逻辑 ==========
   const handleDelete = async (id: number) => {
-    await window.electron.ipc.deleteItem(id);
-    setAllItems((prev) => prev.filter((it) => it.id !== id));
-    setItems((prev) => prev.filter((it) => it.id !== id));
+    if (currentTab === 'storage') {
+      await window.electron.ipc.deleteItem(id);
+      setAllItems((prev) => prev.filter((it) => it.id !== id));
+      setItems((prev) => prev.filter((it) => it.id !== id));
+    } else {
+      await window.electron.ipc.deleteTakenOutItem(id);
+      setAllTakenOutItems((prev) => prev.filter((it) => it.id !== id));
+      setTakenOutItems((prev) => prev.filter((it) => it.id !== id));
+    }
+  };
+
+  // ========== 拿出逻辑 (在 storage 行点击「拿出」) ==========
+  const handleTakeOut = async (id: number) => {
+    const resp = await window.electron.ipc.takeOutItem(id);
+    if (!resp.success) {
+      alert(resp.message || '拿出失败');
+      return;
+    }
+    // 如果成功，就同步更新本地 state
+    window.electron.ipc.getItems().then((data) => {
+      setAllItems(data);
+      setItems(data);
+    });
+    window.electron.ipc.getTakenOutItems().then((data) => {
+      setAllTakenOutItems(data);
+      setTakenOutItems(data);
+    });
+  };
+
+  // ========== 放回逻辑 (在 takenOut 行点击「放回」) ==========
+  const handleReturn = async (id: number) => {
+    const resp = await window.electron.ipc.returnTakenOutItem(id);
+    if (!resp.success) {
+      alert(resp.message || '放回失败');
+      return;
+    }
+    // 放回成功后，刷新两边数据
+    window.electron.ipc.getItems().then((data) => {
+      setAllItems(data);
+      setItems(data);
+    });
+    window.electron.ipc.getTakenOutItems().then((data) => {
+      setAllTakenOutItems(data);
+      setTakenOutItems(data);
+    });
   };
 
   // ========== 同步逻辑 ==========
   const handleSync = async () => {
-    setShowSyncPanel(false); // 点击后先收起syncPanel
+    setShowSyncPanel(false);
     const resp = await window.electron.ipc.syncWithFirebase();
     if (!resp.success) {
       alert(`连接 Firebase 失败: ${resp.message || ''}`);
       return;
     }
+
     const remoteItems = resp.remoteItems || [];
+    const remoteTakenOutItems = resp.remoteTakenOutItems || [];
+
     setRemoteItemsCache(remoteItems);
+    setRemoteTakenOutCache(remoteTakenOutItems);
 
-    // 简单判断差异
-    if (remoteItems.length !== allItems.length) {
-      setShowConflictModal(true);
-      return;
-    }
+    // 判断差异
+    const sameStorage = checkSameItems(allItems, remoteItems);
+    const sameTakenOut = checkSameTakenOut(allTakenOutItems, remoteTakenOutItems);
 
-    const localMap = new Map(allItems.map((it) => [it.id, it]));
-    let conflictFound = false;
-    for (const rIt of remoteItems) {
-      const local = localMap.get(rIt.id);
-      if (
-        !local ||
-        local.name !== rIt.name ||
-        local.location !== rIt.location ||
-        local.quantity !== rIt.quantity ||
-        local.notes !== rIt.notes
-      ) {
-        conflictFound = true;
-        break;
-      }
-    }
-    if (conflictFound) {
-      setShowConflictModal(true);
-    } else {
+    if (sameStorage && sameTakenOut) {
       alert('当前本地数据与远程数据完全一致，无需覆盖。');
+    } else {
+      setShowConflictModal(true);
     }
   };
+
+  function checkSameItems(local: Item[], remote: Item[]) {
+    if (local.length !== remote.length) return false;
+    const mapLocal = new Map(local.map((it) => [it.id, it]));
+    for (const rIt of remote) {
+      const lIt = mapLocal.get(rIt.id);
+      if (
+        !lIt ||
+        lIt.name !== rIt.name ||
+        lIt.location !== rIt.location ||
+        lIt.quantity !== rIt.quantity ||
+        lIt.notes !== rIt.notes
+      ) {
+        return false;
+      }
+    }
+    return true;
+  }
+  function checkSameTakenOut(local: TakenOutItem[], remote: TakenOutItem[]) {
+    if (local.length !== remote.length) return false;
+    const mapLocal = new Map(local.map((it) => [it.id, it]));
+    for (const rIt of remote) {
+      const lIt = mapLocal.get(rIt.id);
+      if (
+        !lIt ||
+        lIt.name !== rIt.name ||
+        lIt.originalLocation !== rIt.originalLocation ||
+        lIt.quantity !== rIt.quantity ||
+        lIt.notes !== rIt.notes
+      ) {
+        return false;
+      }
+    }
+    return true;
+  }
 
   const handleLocalOverwriteRemote = async () => {
     const resp = await window.electron.ipc.overwriteFirebaseByLocal();
@@ -183,23 +306,299 @@ export default function App() {
   };
 
   const handleRemoteOverwriteLocal = async () => {
-    const resp = await window.electron.ipc.overwriteLocalByFirebase(remoteItemsCache);
+    const payload = {
+      remoteItems: remoteItemsCache,
+      remoteTakenOutItems: remoteTakenOutCache,
+    };
+    const resp = await window.electron.ipc.overwriteLocalByFirebase(payload);
     if (!resp.success) {
       alert(`远程覆盖本地失败: ${resp.message || ''}`);
     } else {
       setAllItems(remoteItemsCache);
       setItems(remoteItemsCache);
+      setAllTakenOutItems(remoteTakenOutCache);
+      setTakenOutItems(remoteTakenOutCache);
       alert('已用远程数据覆盖本地完毕。');
       setShowConflictModal(false);
     }
+  };
+
+  // ========== 渲染函数: Storage 列表 ==========
+  const renderStorageList = () => {
+    return (
+      <div className="w-full max-w-3xl mx-auto space-y-2">
+        {items.map((it) => {
+          const isEditing = editingItem && editingItem.id === it.id;
+
+          if (isEditing) {
+            // 编辑行
+            return (
+              <div
+                key={it.id}
+                className="flex justify-between items-start bg-white p-4 rounded-lg shadow-md"
+              >
+                {/* 左侧编辑区 */}
+                <div className="flex-1 space-y-2">
+                  <div className="flex flex-col sm:flex-row sm:space-x-2">
+                    <input
+                      type="text"
+                      className="flex-1 border border-gray-300 rounded-md px-2 py-1 focus:outline-none mb-2 sm:mb-0"
+                      value={editingItem.name}
+                      onChange={(e) =>
+                        setEditingItem({ ...editingItem, name: e.target.value })
+                      }
+                    />
+                    <input
+                      type="text"
+                      list="location-list"
+                      className="flex-1 border border-gray-300 rounded-md px-2 py-1 focus:outline-none"
+                      value={editingItem.location}
+                      onChange={(e) =>
+                        setEditingItem({ ...editingItem, location: e.target.value })
+                      }
+                    />
+                  </div>
+                  <div className="flex flex-col sm:flex-row sm:space-x-2">
+                    <div className="flex items-center space-x-2 mt-2 sm:mt-0">
+                      <input
+                        type="number"
+                        min={1}
+                        className="w-20 border border-gray-300 rounded-md px-2 py-1 focus:outline-none"
+                        value={editingItem.quantity}
+                        onChange={(e) =>
+                          setEditingItem({
+                            ...editingItem,
+                            quantity: Number(e.target.value),
+                          })
+                        }
+                      />
+                      <span className="text-sm text-gray-600">数量</span>
+                    </div>
+                    <input
+                      type="text"
+                      className="flex-1 border border-gray-300 rounded-md px-2 py-1 focus:outline-none mt-2 sm:mt-0"
+                      value={editingItem.notes}
+                      onChange={(e) =>
+                        setEditingItem({ ...editingItem, notes: e.target.value })
+                      }
+                    />
+                  </div>
+                </div>
+                {/* 右侧操作区 */}
+                <div className="ml-4 flex flex-col space-y-2">
+                  <button
+                    onClick={handleSaveEdit}
+                    className="text-sm bg-blue-600 text-white px-3 py-1 rounded-md hover:bg-blue-700"
+                  >
+                    保存
+                  </button>
+                  <button
+                    onClick={() => setEditingItem(null)}
+                    className="text-sm bg-gray-200 text-gray-700 px-3 py-1 rounded-md hover:bg-gray-300"
+                  >
+                    取消
+                  </button>
+                </div>
+              </div>
+            );
+          } else {
+            // 普通行
+            return (
+              <div
+                key={it.id}
+                className="flex justify-between items-start bg-white p-4 rounded-lg shadow-md"
+              >
+                {/* 左侧展示 */}
+                <div>
+                  <div className="font-semibold text-lg">{it.name}</div>
+                  <div className="text-sm text-gray-500 mt-1">位置: {it.location}</div>
+                  <div className="mt-1 text-gray-600 text-sm">
+                    数量: {it.quantity} &nbsp;|&nbsp; 备注: {it.notes || '(无)'}
+                  </div>
+                </div>
+                {/* 右侧操作按钮 */}
+                <div className="flex flex-col space-y-2">
+                  <button
+                    onClick={() => startEdit(it)}
+                    className="text-sm bg-blue-600 text-white px-3 py-1 rounded-md hover:bg-blue-700"
+                  >
+                    编辑
+                  </button>
+                  <button
+                    onClick={() => handleTakeOut(it.id)}
+                    className="text-sm bg-yellow-600 text-white px-3 py-1 rounded-md hover:bg-yellow-700"
+                  >
+                    拿出
+                  </button>
+                  <button
+                    onClick={() => handleDelete(it.id)}
+                    className="text-sm bg-red-600 text-white px-3 py-1 rounded-md hover:bg-red-700"
+                  >
+                    删除
+                  </button>
+                </div>
+              </div>
+            );
+          }
+        })}
+      </div>
+    );
+  };
+
+  // ========== 渲染函数: TakenOut 列表 ==========
+  const renderTakenOutList = () => {
+    return (
+      <div className="w-full max-w-3xl mx-auto space-y-2">
+        {takenOutItems.map((out) => {
+          const isEditing = editingOutItem && editingOutItem.id === out.id;
+
+          if (isEditing) {
+            // 编辑行
+            return (
+              <div
+                key={out.id}
+                className="flex justify-between items-start bg-white p-4 rounded-lg shadow-md"
+              >
+                {/* 左侧编辑区 */}
+                <div className="flex-1 space-y-2">
+                  <div className="flex flex-col sm:flex-row sm:space-x-2">
+                    <input
+                      type="text"
+                      className="flex-1 border border-gray-300 rounded-md px-2 py-1 focus:outline-none mb-2 sm:mb-0"
+                      value={editingOutItem.name}
+                      onChange={(e) =>
+                        setEditingOutItem({ ...editingOutItem, name: e.target.value })
+                      }
+                    />
+                    <input
+                      type="text"
+                      list="location-list"
+                      className="flex-1 border border-gray-300 rounded-md px-2 py-1 focus:outline-none"
+                      value={editingOutItem.originalLocation}
+                      onChange={(e) =>
+                        setEditingOutItem({
+                          ...editingOutItem,
+                          originalLocation: e.target.value,
+                        })
+                      }
+                    />
+                  </div>
+                  <div className="flex flex-col sm:flex-row sm:space-x-2">
+                    <div className="flex items-center space-x-2 mt-2 sm:mt-0">
+                      <input
+                        type="number"
+                        min={1}
+                        className="w-20 border border-gray-300 rounded-md px-2 py-1 focus:outline-none"
+                        value={editingOutItem.quantity}
+                        onChange={(e) =>
+                          setEditingOutItem({
+                            ...editingOutItem,
+                            quantity: Number(e.target.value),
+                          })
+                        }
+                      />
+                      <span className="text-sm text-gray-600">数量</span>
+                    </div>
+                    <input
+                      type="text"
+                      className="flex-1 border border-gray-300 rounded-md px-2 py-1 focus:outline-none mt-2 sm:mt-0"
+                      value={editingOutItem.notes}
+                      onChange={(e) =>
+                        setEditingOutItem({ ...editingOutItem, notes: e.target.value })
+                      }
+                    />
+                  </div>
+                </div>
+                {/* 右侧操作区 */}
+                <div className="ml-4 flex flex-col space-y-2">
+                  <button
+                    onClick={handleSaveEditTakenOut}
+                    className="text-sm bg-blue-600 text-white px-3 py-1 rounded-md hover:bg-blue-700"
+                  >
+                    保存
+                  </button>
+                  <button
+                    onClick={() => setEditingOutItem(null)}
+                    className="text-sm bg-gray-200 text-gray-700 px-3 py-1 rounded-md hover:bg-gray-300"
+                  >
+                    取消
+                  </button>
+                </div>
+              </div>
+            );
+          } else {
+            // 普通行
+            return (
+              <div
+                key={out.id}
+                className="flex justify-between items-start bg-white p-4 rounded-lg shadow-md"
+              >
+                {/* 左侧展示 */}
+                <div>
+                  <div className="font-semibold text-lg">{out.name}</div>
+                  <div className="text-sm text-gray-500 mt-1">
+                    原位置: {out.originalLocation}
+                  </div>
+                  <div className="mt-1 text-gray-600 text-sm">
+                    数量: {out.quantity} &nbsp;|&nbsp; 备注: {out.notes || '(无)'}
+                  </div>
+                </div>
+                {/* 右侧操作按钮 */}
+                <div className="flex flex-col space-y-2">
+                  <button
+                    onClick={() => startEditTakenOut(out)}
+                    className="text-sm bg-blue-600 text-white px-3 py-1 rounded-md hover:bg-blue-700"
+                  >
+                    编辑
+                  </button>
+                  <button
+                    onClick={() => handleReturn(out.id)}
+                    className="text-sm bg-green-600 text-white px-3 py-1 rounded-md hover:bg-green-700"
+                  >
+                    放回
+                  </button>
+                  <button
+                    onClick={() => handleDelete(out.id)}
+                    className="text-sm bg-red-600 text-white px-3 py-1 rounded-md hover:bg-red-700"
+                  >
+                    删除
+                  </button>
+                </div>
+              </div>
+            );
+          }
+        })}
+      </div>
+    );
   };
 
   return (
     <div className="h-screen w-screen flex flex-col bg-gray-50 text-gray-800">
       {/* ========== 顶部导航栏 ========== */}
       <header className="flex items-center justify-between px-6 py-3 bg-white shadow-md relative">
-        {/* 左侧的标题 */}
-        <div className="text-xl font-semibold">物品管理系统</div>
+        {/* 左侧: Tab 切换按钮 */}
+        <div className="flex space-x-4">
+          <button
+            onClick={() => setCurrentTab('storage')}
+            className={
+              currentTab === 'storage'
+                ? 'font-bold text-blue-600'
+                : 'text-gray-600 hover:text-black'
+            }
+          >
+            Storage
+          </button>
+          <button
+            onClick={() => setCurrentTab('takenOut')}
+            className={
+              currentTab === 'takenOut'
+                ? 'font-bold text-blue-600'
+                : 'text-gray-600 hover:text-black'
+            }
+          >
+            Taken Out
+          </button>
+        </div>
 
         {/* 右侧操作区 */}
         <div className="flex items-center space-x-4">
@@ -224,12 +623,13 @@ export default function App() {
               {/* 输入框 */}
               <input
                 type="text"
-                placeholder="搜索物品..."
+                placeholder={
+                  currentTab === 'storage' ? '搜索存储物品...' : '搜索拿出物品...'
+                }
                 className="w-32 sm:w-48 focus:outline-none"
                 value={searchKeyword}
                 onChange={(e) => setSearchKeyword(e.target.value)}
                 onKeyDown={(e) => {
-                  // 回车时直接搜
                   if (e.key === 'Enter') handleSearch();
                 }}
               />
@@ -289,8 +689,6 @@ export default function App() {
             >
               <SyncIcon className="w-5 h-5" />
             </button>
-
-            {/* 悬浮同步面板 */}
             {showSyncPanel && (
               <div className="absolute top-full right-0 mt-2 w-60 bg-white shadow-lg rounded-md p-4 z-50">
                 <p className="text-sm mb-3">点击下方进行同步操作：</p>
@@ -337,10 +735,9 @@ export default function App() {
 
       {/* ========== 主体可滚动区域 ========== */}
       <main className="mt-[4.5rem] flex-1 overflow-auto px-6 py-4">
-        {/* ========== 添加行 ========== */}
+        {/* ========== 添加区 ========== */}
         <div className="w-full max-w-3xl mx-auto mb-4">
           {!addMode ? (
-            // 未展开时，仅显示一个“+”行
             <div
               className="w-full bg-white p-4 rounded-lg shadow-md flex items-center justify-center cursor-pointer hover:bg-gray-50"
               onClick={() => setAddMode(true)}
@@ -348,7 +745,6 @@ export default function App() {
               <span className="text-2xl font-bold text-gray-400">＋</span>
             </div>
           ) : (
-            // 展开后显示: 左边输入区域 + 右边按钮区域
             <div className="flex justify-between items-start bg-white p-4 rounded-lg shadow-md">
               {/* 左侧输入区 */}
               <div className="flex-1 space-y-2">
@@ -362,7 +758,9 @@ export default function App() {
                   />
                   <input
                     type="text"
-                    placeholder="存放位置"
+                    placeholder={
+                      currentTab === 'storage' ? '存放位置' : 'Original Location'
+                    }
                     list="location-list"
                     className="flex-1 border border-gray-300 rounded-md px-2 py-1 focus:outline-none"
                     value={newLocation}
@@ -414,118 +812,7 @@ export default function App() {
         </div>
 
         {/* ========== 列表区域 ========== */}
-        <div className="w-full max-w-3xl mx-auto space-y-2">
-          {items.map((it) => {
-            const isEditing = editingItem && editingItem.id === it.id;
-
-            if (isEditing) {
-              // =========== 编辑行 ===========
-              return (
-                <div
-                  key={it.id}
-                  className="flex justify-between items-start bg-white p-4 rounded-lg shadow-md"
-                >
-                  {/* 左侧编辑区 */}
-                  <div className="flex-1 space-y-2">
-                    <div className="flex flex-col sm:flex-row sm:space-x-2">
-                      <input
-                        type="text"
-                        className="flex-1 border border-gray-300 rounded-md px-2 py-1 focus:outline-none mb-2 sm:mb-0"
-                        value={editingItem.name}
-                        onChange={(e) =>
-                          setEditingItem({ ...editingItem, name: e.target.value })
-                        }
-                      />
-                      <input
-                        type="text"
-                        list="location-list"
-                        className="flex-1 border border-gray-300 rounded-md px-2 py-1 focus:outline-none"
-                        value={editingItem.location}
-                        onChange={(e) =>
-                          setEditingItem({ ...editingItem, location: e.target.value })
-                        }
-                      />
-                    </div>
-                    <div className="flex flex-col sm:flex-row sm:space-x-2">
-                      <div className="flex items-center space-x-2 mt-2 sm:mt-0">
-                        <input
-                          type="number"
-                          min={1}
-                          className="w-20 border border-gray-300 rounded-md px-2 py-1 focus:outline-none"
-                          value={editingItem.quantity}
-                          onChange={(e) =>
-                            setEditingItem({
-                              ...editingItem,
-                              quantity: Number(e.target.value),
-                            })
-                          }
-                        />
-                        <span className="text-sm text-gray-600">数量</span>
-                      </div>
-                      <input
-                        type="text"
-                        className="flex-1 border border-gray-300 rounded-md px-2 py-1 focus:outline-none mt-2 sm:mt-0"
-                        value={editingItem.notes}
-                        onChange={(e) =>
-                          setEditingItem({ ...editingItem, notes: e.target.value })
-                        }
-                      />
-                    </div>
-                  </div>
-                  {/* 右侧操作区 */}
-                  <div className="ml-4 flex flex-col space-y-2">
-                    <button
-                      onClick={handleSaveEdit}
-                      className="text-sm bg-blue-600 text-white px-3 py-1 rounded-md hover:bg-blue-700"
-                    >
-                      保存
-                    </button>
-                    <button
-                      onClick={() => setEditingItem(null)}
-                      className="text-sm bg-gray-200 text-gray-700 px-3 py-1 rounded-md hover:bg-gray-300"
-                    >
-                      取消
-                    </button>
-                  </div>
-                </div>
-              );
-            } else {
-              // =========== 普通行(显示) ===========
-              return (
-                <div
-                  key={it.id}
-                  className="flex justify-between items-start bg-white p-4 rounded-lg shadow-md"
-                >
-                  {/* 左侧展示区域 */}
-                  <div>
-                    <div className="font-semibold text-lg">{it.name}</div>
-                    <div className="text-sm text-gray-500 mt-1">
-                      位置: {it.location}
-                    </div>
-                    <div className="mt-1 text-gray-600 text-sm">
-                      数量: {it.quantity} &nbsp;|&nbsp; 备注: {it.notes || '(无)'}
-                    </div>
-                  </div>
-                  {/* 右侧操作按钮 */}
-                  <div className="flex flex-col space-y-2">
-                    <button
-                      onClick={() => startEdit(it)}
-                      className="text-sm bg-blue-600 text-white px-3 py-1 rounded-md hover:bg-blue-700"
-                    >
-                      编辑
-                    </button>
-                    <button
-                      onClick={() => handleDelete(it.id)}
-                      className="text-sm bg-red-600 text-white px-3 py-1 rounded-md hover:bg-red-700"
-                    >
-                      删除
-                    </button>
-                  </div>
-                </div>
-              );
-            }
-          })}
-        </div>
+        {currentTab === 'storage' ? renderStorageList() : renderTakenOutList()}
       </main>
     </div>
   );
