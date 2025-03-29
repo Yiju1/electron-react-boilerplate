@@ -1,29 +1,45 @@
-// Disable no-unused-vars, broken for spread args
-/* eslint no-unused-vars: off */
-import { contextBridge, ipcRenderer, IpcRendererEvent } from 'electron';
+import { contextBridge, ipcRenderer } from 'electron';
 
-export type Channels = 'ipc-example';
+contextBridge.exposeInMainWorld('electron', {
+  ipc: {
+    // 1) 获取所有物品（全量）
+    getItems: () => ipcRenderer.invoke('get-items'),
 
-const electronHandler = {
-  ipcRenderer: {
-    sendMessage(channel: Channels, ...args: unknown[]) {
-      ipcRenderer.send(channel, ...args);
-    },
-    on(channel: Channels, func: (...args: unknown[]) => void) {
-      const subscription = (_event: IpcRendererEvent, ...args: unknown[]) =>
-        func(...args);
-      ipcRenderer.on(channel, subscription);
+    // 2) 添加物品
+    addItem: (data: {
+      name: string;
+      location: string;
+      quantity: number;
+      notes: string;
+    }) => ipcRenderer.invoke('add-item', data),
 
-      return () => {
-        ipcRenderer.removeListener(channel, subscription);
-      };
-    },
-    once(channel: Channels, func: (...args: unknown[]) => void) {
-      ipcRenderer.once(channel, (_event, ...args) => func(...args));
-    },
+    // 3) 更新物品
+    updateItem: (data: {
+      id: number;
+      name: string;
+      location: string;
+      quantity: number;
+      notes: string;
+    }) => ipcRenderer.invoke('update-item', data),
+
+    // 4) 删除物品
+    deleteItem: (id: number) => ipcRenderer.invoke('delete-item', id),
+
+    // 5) 搜索
+    searchItems: (args: {
+      keyword: string;
+      includeNotes: boolean;
+      locationFilter: string;
+    }) => ipcRenderer.invoke('search-items', args),
+
+    // 6) 同步
+    syncWithFirebase: () => ipcRenderer.invoke('sync-with-firebase'),
+
+    // 7) 覆盖：本地 -> Firebase
+    overwriteFirebaseByLocal: () => ipcRenderer.invoke('overwrite-firebase-by-local'),
+
+    // 8) 覆盖：Firebase -> 本地
+    overwriteLocalByFirebase: (remoteItems: any) =>
+      ipcRenderer.invoke('overwrite-local-by-firebase', remoteItems),
   },
-};
-
-contextBridge.exposeInMainWorld('electron', electronHandler);
-
-export type ElectronHandler = typeof electronHandler;
+});
